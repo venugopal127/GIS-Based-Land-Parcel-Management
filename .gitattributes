@@ -1,0 +1,19 @@
+
+'backend/.env' -text
+'backend/controllers/authController.js' -text
+'backend/controllers/knuctController.js' -text
+'backend/models/User.js' -text
+'backend/models/db.js' -text
+'backend/node_modules/.bin/bcrypt.cmd' -text
+'backend/node_modules/.bin/mime.cmd' -text
+'backend/node_modules/.bin/semver.cmd' -text
+'backend/node_modules/.bin/tldts.cmd' -text
+'backend/node_modules/@types/node/README.md' -text        
+'backend/node_modules/@types/phoenix/README.md' -text   
+'backend/node_modules/@types/ws/README.md' -text
+'backend/node_modules/axios/CHANGELOG.md' -text
+'backend/node_modules/whatwg-url/lib/url-state-machine.js' -text
+'backend/routes/authRoutes.js' -text
+'backend/routes/knuctRoutes.js' -text
+'backend/server.js' -text
+'backend/testDb.js' -text
