@@ -2,31 +2,56 @@ const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const axios = require("axios");
 const supabase = require("../models/db");
+const crypto = require("crypto");
 require("dotenv").config();
 
 const KNUCT_API = process.env.KNUCT_API_BASE_URL;
 
+// ✅ Seed Words List
 const seedWordsList = [
     "Hill", "Bull", "Bag", "Window", "Parrot", "Cloud", "Design", "Zebra",
     "Book", "Cat", "Mobile", "Dog", "Tree", "Computer", "Bottle", "Water"
 ];
 
+// ✅ Function to get 4 random seed words
 const getRandomSeedWords = () => {
-    // Fisher-Yates shuffle to randomly shuffle the words array
-    for (let i = seedWordsList.length - 1; i > 0; i--) {
+    let shuffledWords = [...seedWordsList];
+    for (let i = shuffledWords.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [seedWordsList[i], seedWordsList[j]] = [seedWordsList[j], seedWordsList[i]];
+        [shuffledWords[i], shuffledWords[j]] = [shuffledWords[j], shuffledWords[i]];
     }
-
-    // Return exactly 4 words
-    return seedWordsList.slice(0, 4);
+    return shuffledWords.slice(0, 4).map(word => word.toLowerCase());
 };
 
-const crypto = require("crypto");
+// ✅ Function to Fetch Private Share & Store as Buffer
+const storePrivateShareBuffer = async (email, privshareUrl) => {
+    try {
+        console.log("🔹 Fetching Private Share Image...");
+        const response = await axios.get(privshareUrl, { responseType: "arraybuffer" });
 
+        // ✅ Convert image to Buffer
+        const imageBuffer = Buffer.from(response.data);
+
+        console.log("✅ Private Share Image Fetched Successfully!");
+
+        // ✅ Store Buffer in Supabase
+        const { data, error } = await supabase
+            .from("users")
+            .update({ privshare_image: imageBuffer })
+            .eq("email", email);
+
+        if (error) throw error;
+        console.log("✅ Private Share Image Stored Successfully!");
+        return true;
+    } catch (error) {
+        console.error("❌ Error storing Private Share:", error);
+        throw new Error("Failed to store Private Share");
+    }
+};
+
+// ✅ Register User & Generate Wallet
 const register = async (req, res) => {
     console.log("📌 Received Register Request:", req.body);
-
     const { name, email, password } = req.body;
 
     try {
@@ -47,76 +72,90 @@ const register = async (req, res) => {
 
         console.log("✅ User Inserted in Supabase:", data);
 
-        // ✅ Generate a Proper UUID v4 for Passphrase
-        const passphrase = crypto.randomUUID(); // Correctly formatted UUID v4
+        // Generate Passphrase & Seed Words
+        const passphrase = crypto.randomUUID();
+        const seedWords = getRandomSeedWords();
 
-        // ✅ Select 4 random seed words and convert to lowercase
-        const seedWords = getRandomSeedWords().map(word => word.toLowerCase());
+        const payload = { passphrase, seedWords };
 
-        // ✅ Format JSON exactly as needed
-        const payload = {
-            "passphrase": passphrase,
-            "seedWords": seedWords
-        };
+        // ✅ Start Temporary Node
+        console.log("🚀 Starting Temporary Node...");
+        const startNodeResponse = await axios.get(`${KNUCT_API}/starttempnode`);
 
-        // 1. Check status of Knuct API before creating the wallet
-        try {
-            console.log("🚀 Sending request to Knuct API to start the temporary node...");
-            const startTempNodeResponse = await axios.get(
-                `${KNUCT_API}/starttempnode`,
-                
-            );
+        if (startNodeResponse.status === 204) {
+            console.log("✅ Node Started Successfully, Proceeding to Wallet Creation");
 
-            // Check if the response is 204 (No Content)
-            if (startTempNodeResponse.status === 204) {
-                console.log("✅ Node Started Successfully, Proceeding to Wallet Creation");
+            console.log("🚀 Creating Wallet...");
+            const createWalletResponse = await axios.post(
+                `${KNUCT_API}/createwallet`,
+                payload,
+                {
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Cookie": startNodeResponse.headers["set-cookie"]
+                    }
+                });
 
-                // 2. Send request to create wallet
-                console.log("🚀 Sending request to Knuct API with Payload:", JSON.stringify(payload, null, 2));
-                const createWalletResponse = await axios.post(
-                    `${KNUCT_API}/createwallet`,
-                    payload,
-                    {
-                        headers: {
-                            "Content-Type": "application/json",
-                            "Cookie": startTempNodeResponse.headers["set-cookie"] // Pass the session cookie
-                        }
-                    });
+            console.log("✅ Wallet Created Successfully:", createWalletResponse.data);
+            const { did, privshare } = createWalletResponse.data.data;
 
-                console.log("✅ Knuct API Response:", createWalletResponse.data);
+            console.log("🔹 Storing DID & Private Share URL in Supabase...");
+            await supabase
+                .from("users")
+                .update({ did, privshare_url: privshare })
+                .eq("email", email);
 
-                const { did, privshare } = createWalletResponse.data.data;
+            console.log("✅ DID & Private Share URL Stored Successfully!");
 
-                // 3. Store DID and Private Share in Supabase
-                console.log("🔹 Storing DID & Private Share in Supabase...");
-                const updateResponse = await supabase
-                    .from("users")
-                    .update({ did, privshare_url: privshare })
-                    .eq("email", email);
+            // ✅ Fetch & Store Private Share Image as Buffer
+            const privshareFullUrl = `${KNUCT_API}${privshare}`;
+            await storePrivateShareBuffer(email, privshareFullUrl);
 
-                if (updateResponse.error) {
-                    console.error("❌ Supabase Update Error:", updateResponse.error);
-                    return res.status(500).json({ error: "Supabase Update Failed", details: updateResponse.error });
-                }
-
-                console.log("✅ DID & Wallet successfully stored in Supabase");
-
-                return res.status(201).json({ message: "User registered successfully", did });
-            } else {
-                console.error("❌ Knuct API did not start the node successfully", startTempNodeResponse.status);
-                return res.status(500).json({ error: "Knuct API Failed to Start Node", details: "Status: " + startTempNodeResponse.status });
-            }
-        } catch (knuctError) {
-            console.error("❌ Knuct API Error:", knuctError.response ? knuctError.response.data : knuctError.message);
-            return res.status(500).json({ error: "Knuct API Failed", details: knuctError.response ? knuctError.response.data : knuctError.message });
+            return res.status(201).json({ message: "User registered successfully", did });
+        } else {
+            console.error("❌ Knuct API failed to start the node", startNodeResponse.status);
+            return res.status(500).json({ error: "Knuct API Failed to Start Node" });
         }
-
     } catch (error) {
         console.error("❌ Registration Error:", error.message);
         return res.status(500).json({ error: "Registration failed", details: error.message });
     }
 };
 
+// ✅ Retrieve Private Share Image as Buffer from Supabase
+const getPrivateShareBuffer = async (req, res) => {
+    const { email } = req.params;
+
+    try {
+        console.log(`📥 Fetching Private Share Image for ${email}...`);
+        const { data, error } = await supabase
+            .from("users")
+            .select("privshare_image")
+            .eq("email", email)
+            .single();
+
+        if (error || !data || !data.privshare_image) {
+            console.error("❌ Error retrieving private share:", error);
+            return res.status(404).json({ error: "Private share not found" });
+        }
+
+        console.log("✅ Private Share Image Retrieved Successfully!");
+
+        // Send Image Buffer as Response
+        res.setHeader("Content-Type", "image/png");
+        res.send(Buffer.from(data.privshare_image));
+    } catch (error) {
+        console.error("❌ Error retrieving private share:", error.message);
+        res.status(500).json({ error: "Failed to retrieve private share." });
+    }
+};
+
+
+
+
+
+
+// Login Function
 const login = async (req, res) => {
     const { email, password } = req.body;
 
@@ -154,4 +193,4 @@ const login = async (req, res) => {
     }
 };
 
-module.exports = { register, login };
+module.exports = { register, getPrivateShareBuffer,login };
